@@ -105,47 +105,41 @@ func processCgoFiles(bp *build.Package, fset *token.FileSet, DisplayPath func(pa
 	return files, nil
 }
 
+// _getPkgConfigFlags calls pkg-config with --cflags or --libs
+func _getPkgConfigFlags(mode string, pkgs []string) (flags []string, err error) {
+	if mode != "--cflags" && mode != "--libs" {
+		return nil, fmt.Errorf("Unknown mode: %s", mode)
+	}
+	var buf bytes.Buffer
+	cmd := exec.Command("pkg-config",
+		append([]string{mode}, pkgs...)...)
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	cmd.Env = os.Environ()
+	err = cmd.Run()
+	out := buf.Bytes()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s\n", string(out))
+		return nil, fmt.Errorf("pkg-config failed: %s: %s",
+			strings.Join(cmd.Args, " "),
+			err)
+	}
+	if len(out) > 0 {
+		flags = strings.Fields(string(out))
+	}
+	return
+}
+
 // getPkgConfigFlags calls pkg-config if needed and returns the cflags/ldflags needed to build the package.
 func getPkgConfigFlags(p *build.Package) (cflags, ldflags []string, err error) {
-	var buf bytes.Buffer
 	if pkgs := p.CgoPkgConfig; len(pkgs) > 0 {
-		// set cflags
-		cmd := exec.Command("pkg-config",
-			append([]string{"--cflags"}, pkgs...)...)
-		cmd.Stdout = &buf
-		cmd.Stderr = &buf
-		cmd.Dir = p.Dir
-		cmd.Env = os.Environ()
-		err := cmd.Run()
-		out := buf.Bytes()
+		cflags, err = _getPkgConfigFlags("--cflags", pkgs)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s\n", string(out))
-			return nil, nil, fmt.Errorf("pkg-config failed: %s: %s",
-				strings.Join(cmd.Args, " "),
-				err)
+			return nil, nil, err
 		}
-		if len(out) > 0 {
-			cflags = strings.Fields(string(out))
-		}
-
-		//set ldflags
-		cmd = exec.Command("pkg-config",
-			append([]string{"--libs"}, pkgs...)...)
-		cmd.Stdout = &buf
-		cmd.Stderr = &buf
-		cmd.Dir = p.Dir
-		cmd.Env = os.Environ()
-		err = cmd.Run()
-		out = buf.Bytes()
+		ldflags, err = _getPkgConfigFlags("--cflags", pkgs)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s\n", string(out))
-			return nil, nil, fmt.Errorf("pkg-config failed: %s: %s",
-				strings.Join(cmd.Args, " "),
-				err)
-		}
-
-		if len(out) > 0 {
-			ldflags = strings.Fields(string(out))
+			return nil, nil, err
 		}
 	}
 	return
