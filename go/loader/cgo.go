@@ -54,6 +54,7 @@ package loader
 // lookups in which y=m[k] and y,ok=m[k] are both legal.
 
 import (
+	"bytes"
 	"fmt"
 	"go/ast"
 	"go/build"
@@ -104,6 +105,52 @@ func processCgoFiles(bp *build.Package, fset *token.FileSet, DisplayPath func(pa
 	return files, nil
 }
 
+// getPkgConfigFlags calls pkg-config if needed and returns the cflags/ldflags needed to build the package.
+func getPkgConfigFlags(p *build.Package) (cflags, ldflags []string, err error) {
+	var buf bytes.Buffer
+	if pkgs := p.CgoPkgConfig; len(pkgs) > 0 {
+		// set cflags
+		cmd := exec.Command("pkg-config",
+			append([]string{"--cflags"}, pkgs...)...)
+		cmd.Stdout = &buf
+		cmd.Stderr = &buf
+		cmd.Dir = p.Dir
+		cmd.Env = os.Environ()
+		err := cmd.Run()
+		out := buf.Bytes()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s\n", string(out))
+			return nil, nil, fmt.Errorf("pkg-config failed: %s: %s",
+				strings.Join(cmd.Args, " "),
+				err)
+		}
+		if len(out) > 0 {
+			cflags = strings.Fields(string(out))
+		}
+
+		//set ldflags
+		cmd = exec.Command("pkg-config",
+			append([]string{"--libs"}, pkgs...)...)
+		cmd.Stdout = &buf
+		cmd.Stderr = &buf
+		cmd.Dir = p.Dir
+		cmd.Env = os.Environ()
+		err = cmd.Run()
+		out = buf.Bytes()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s\n", string(out))
+			return nil, nil, fmt.Errorf("pkg-config failed: %s: %s",
+				strings.Join(cmd.Args, " "),
+				err)
+		}
+
+		if len(out) > 0 {
+			ldflags = strings.Fields(string(out))
+		}
+	}
+	return
+}
+
 var cgoRe = regexp.MustCompile(`[/\\:]`)
 
 // runCgo invokes the cgo preprocessor on bp.CgoFiles and returns two
@@ -112,14 +159,19 @@ var cgoRe = regexp.MustCompile(`[/\\:]`)
 //
 // runCgo is adapted from (*builder).cgo in
 // $GOROOT/src/cmd/go/build.go, but these features are unsupported:
-// pkg-config, Objective C, CGOPKGPATH, CGO_FLAGS.
+// Objective C, CGOPKGPATH, CGO_FLAGS.
 //
 func runCgo(bp *build.Package, pkgdir, tmpdir string) (files, displayFiles []string, err error) {
-	cgoCPPFLAGS, _, _, _ := cflags(bp, true)
+	cgoCPPFLAGS, _, _, cgoLDFLAGS := cflags(bp, true)
 	_, cgoexeCFLAGS, _, _ := cflags(bp, false)
 
 	if len(bp.CgoPkgConfig) > 0 {
-		return nil, nil, fmt.Errorf("cgo pkg-config not supported")
+		pcCFLAGS, pcLDFLAGS, err := getPkgConfigFlags(bp)
+		if err != nil {
+			return nil, nil, err
+		}
+		cgoCPPFLAGS = append(cgoCPPFLAGS, pcCFLAGS...)
+		cgoLDFLAGS = append(cgoLDFLAGS, pcLDFLAGS...)
 	}
 
 	// Allows including _cgo_export.h from .[ch] files in the package.
@@ -145,7 +197,7 @@ func runCgo(bp *build.Package, pkgdir, tmpdir string) (files, displayFiles []str
 
 	args := stringList(
 		"go", "tool", "cgo", "-objdir", tmpdir, cgoflags, "--",
-		cgoCPPFLAGS, cgoexeCFLAGS, bp.CgoFiles,
+		cgoCPPFLAGS, cgoLDFLAGS, cgoexeCFLAGS, bp.CgoFiles,
 	)
 	if false {
 		log.Printf("Running cgo for package %q: %s (dir=%s)", bp.ImportPath, args, pkgdir)
